@@ -1,143 +1,168 @@
+import streamlit as st
 import datetime
 import uuid
-from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Depends, Header, UploadFile, File, Form
-from pydantic import BaseModel
-import requests
 
-app = FastAPI(title="Mazen AI Video Generator")
+# ==================== إعدادات الصفحة ====================
+st.set_page_config(
+    page_title="Mazen AI Video Generator",
+    page_icon="🎬",
+    layout="centered"
+)
 
-# ==================== قاعدة البيانات (مؤقتة في الذاكرة - يمكن ربطها بـ SQLite/PostgreSQL) ====================
-
+# ==================== قاعدة البيانات وإدارة الجلسات (في الذاكرة) ====================
 ADMIN_PHONE = "779942299"
 ADMIN_PASSWORD = "mmaa112000"
 
-# الهيكل: { "code_123": {"days_valid": 30, "created_at": date, "is_active": True, "videos_today": 0, "last_used_date": date} }
-users_db = {}
-admin_sessions = set()
+if "users_db" not in st.session_state:
+    st.session_state.users_db = {}
 
-# ==================== Pydantic Models ====================
+if "admin_logged_in" not in st.session_state:
+    st.session_state.admin_logged_in = False
 
-class AdminLogin(BaseModel):
-    phone: str
-    password: str
+# ==================== واجهة المستخدم الجانبية (التنقل) ====================
+st.sidebar.title("🧭 القائمة الرئيسية")
+app_mode = st.sidebar.selectbox("اختر وضع الاستخدام:", ["🎬 توليد الفيديو (المستخدم)", "🔐 لوحة تحكم المدير"])
 
-class GenerateUserCode(BaseModel):
-    custom_code: Optional[str] = None
-    valid_days: int
+# ==================== 1. وضع توليد الفيديو (المستخدم) ====================
+if app_mode == "🎬 توليد الفيديو (المستخدم)":
+    st.title("🎬 Mazen AI Video Generator")
+    st.write("أهلاً بك! أدخل رمز الدخول الخاص بك ووصف الفيديو للبدء في الإنتاج.")
 
-class UpdateUserCode(BaseModel):
-    user_code: str
-    action: str  # "extend", "stop", "activate"
-    additional_days: Optional[int] = 0
-
-# ==================== مصادقة المدير والمستخدمين ====================
-
-@app.post("/admin/login")
-def admin_login(data: AdminLogin):
-    if data.phone == ADMIN_PHONE and data.password == ADMIN_PASSWORD:
-        session_token = str(uuid.uuid4())
-        admin_sessions.add(session_token)
-        return {"status": "success", "message": "أهلاً بك يا مدير", "admin_token": session_token}
-    raise HTTPException(status_code=401, detail="بيانات دخول المدير غير صحيحة")
-
-def verify_admin(x_admin_token: str = Header(...)):
-    if x_admin_token not in admin_sessions:
-        raise HTTPException(status_code=403, detail="غير مسموح. صلاحية المدير مطلوبة")
-    return True
-
-def verify_user_access(x_user_code: str = Header(...)):
-    # التحقق هل هو المدير؟
-    if x_user_code == "ADMIN_MASTER_KEY":
-        return {"is_admin": True}
-
-    if x_user_code not in users_db:
-        raise HTTPException(status_code=401, detail="الرمز السري غير صحيح أو غير موجود")
+    user_code = st.text_input("أدخل رمز الدخول (User Code):", type="password")
     
-    user = users_db[x_user_code]
-    
-    if not user["is_active"]:
-        raise HTTPException(status_code=403, detail="تم إيقاف هذا الحساب من قبل المدير")
-    
-    # التحقق من تاريخ انتهاء الصلاحية
-    expiration_date = user["created_at"] + datetime.timedelta(days=user["valid_days"])
-    if datetime.date.today() > expiration_date:
-        raise HTTPException(status_code=403, detail="انتهت فترة الاشتراك الخاصة بك")
+    if user_code:
+        # التحقق من صلاحية المستخدم
+        is_admin_master = (user_code == "ADMIN_MASTER_KEY")
+        
+        if not is_admin_master and user_code not in st.session_state.users_db:
+            st.error("❌ الرمز السري غير صحيح أو غير موجود.")
+        else:
+            if is_admin_master:
+                st.success("🔓 تم الدخول بصلاحيات المدير المطلقة.")
+                is_admin = True
+            else:
+                user = st.session_state.users_db[user_code]
+                
+                if not user["is_active"]:
+                    st.error("❌ تم إيقاف هذا الحساب من قبل المدير.")
+                    st.stop()
+                
+                # التحقق من تاريخ انتهاء الصلاحية
+                expiration_date = user["created_at"] + datetime.timedelta(days=user["valid_days"])
+                if datetime.date.today() > expiration_date:
+                    st.error("⏳ انتهت فترة الاشتراك الخاصة بك.")
+                    st.stop()
 
-    # تحديث وتعديل العداد اليومي
-    if user["last_used_date"] != datetime.date.today():
-        user["last_used_date"] = datetime.date.today()
-        user["videos_today"] = 0
+                # تحديث العداد اليومي
+                if user["last_used_date"] != datetime.date.today():
+                    user["last_used_date"] = datetime.date.today()
+                    user["videos_today"] = 0
 
-    return {"is_admin": False, "user_data": user, "code": x_user_code}
+                is_admin = False
 
-# ==================== لوحة تحكم المدير ====================
+            st.markdown("---")
+            st.subheader("🛠️ إعدادات توليد الفيديو")
+            
+            prompt_text = st.text_area("أدخل نص/وصف الفيديو (Prompt):", placeholder="وصف تفصيلي للفيديو...")
+            voice_name = st.selectbox("اختر الصوت (Voice Name):", ["Arabic_Male_1", "Arabic_Female_1", "Cinematic_Voice"])
+            image_file = st.file_uploader("رفع صورة مرجعية اختيارية (Image File):", type=["png", "jpg", "jpeg"])
+            duration_seconds = st.slider("مدة الفيديو بالثواني:", min_value=5, max_value=30, value=10)
 
-@app.post("/admin/generate-code", dependencies=[Depends(verify_admin)])
-def create_code(data: GenerateUserCode):
-    code = data.custom_code or str(uuid.uuid4())[:8]
-    users_db[code] = {
-        "valid_days": data.valid_days,
-        "created_at": datetime.date.today(),
-        "is_active": True,
-        "videos_today": 0,
-        "last_used_date": datetime.date.today()
-    }
-    return {"status": "success", "user_code": code, "valid_days": data.valid_days}
+            if not is_admin:
+                user_data = st.session_state.users_db[user_code]
+                remaining_videos = 3 - user_data["videos_today"]
+                st.info(f"📊 رصيدك المتبقي لليوم: **{max(0, remaining_videos)} فيديوهات**")
 
-@app.post("/admin/manage-user", dependencies=[Depends(verify_admin)])
-def manage_user(data: UpdateUserCode):
-    if data.user_code not in users_db:
-        raise HTTPException(status_code=404, detail="المستخدم غير موجود")
-    
-    user = users_db[data.user_code]
-    if data.action == "stop":
-        user["is_active"] = False
-    elif data.action == "activate":
-        user["is_active"] = True
-    elif data.action == "extend":
-        user["valid_days"] += data.additional_days
-        user["is_active"] = True
+            if st.button("🚀 بدء إنتاج الفيديو"):
+                if not prompt_text.strip():
+                    st.warning("الرجاء إدخال وصف الفيديو أولاً.")
+                else:
+                    # قيود المستخدم العادي
+                    if not is_admin:
+                        if user_data["videos_today"] >= 3:
+                            st.error("⚠️ لقد استهلكت الحد الأقصى اليومي (3 فيديوهات). حاول غداً.")
+                            st.stop()
+                        if duration_seconds > 10:
+                            duration_seconds = 10
 
-    return {"status": "success", "message": f"تم تحديث الحساب {data.user_code} بنجاح", "user": user}
+                    with st.spinner("جاري معالجة وتوليد الفيديو بالذكاء الاصطناعي... يرجى الانتظار ⏳"):
+                        # محاكاة عملية التوليد
+                        import time
+                        time.sleep(3)
+                        
+                        video_url = f"https://your-server.com/outputs/generated_video_{uuid.uuid4().hex[:6]}.mp4"
+                        
+                        if not is_admin:
+                            user_data["videos_today"] += 1
 
-# ==================== محرك إنتاج الفيديو بالذكاء الاصطناعي ====================
+                        st.success("🎉 تم إنتاج الفيديو بنجاح!")
+                        st.markdown(f"🔗 **رابط التحميل المباشر:** [اضغط هنا للتحميل]({video_url})")
+                        st.video(video_url)
 
-@app.post("/generate-video")
-async def generate_video(
-    prompt_text: str = Form(...),
-    voice_name: Optional[str] = Form("Arabic_Male_1"),
-    image_file: Optional[UploadFile] = File(None),
-    duration_seconds: int = Form(10),
-    auth_info: dict = Depends(verify_user_access)
-):
-    is_admin = auth_info["is_admin"]
+# ==================== 2. لوحة تحكم المدير ====================
+elif app_mode == "🔐 لوحة تحكم المدير":
+    st.title("🔐 لوحة تحكم المدير")
 
-    # تطبيق القيود على المستخدم العادي
-    if not is_admin:
-        user = auth_info["user_data"]
-        if user["videos_today"] >= 3:
-            raise HTTPException(status_code=429, detail="لقد استهلكت الحد الأقصى اليومي (3 فيديوهات). حاول غداً.")
-        if duration_seconds > 10:
-            duration_seconds = 10 # إجبار المدة على 10 ثوانٍ كحد أقصى
+    if not st.session_state.admin_logged_in:
+        st.subheader("تسجيل دخول المدير")
+        phone_input = st.text_input("رقم الهاتف:")
+        password_input = st.text_input("كلمة المرور:", type="password")
 
-    # --- التكامل مع خدمات الذكاء الاصطناعي الحقيقية (AI Generation Logic) ---
-    # 1. تحويل النص إلى صوت بالصوت المطلوب (مثل ElevenLabs API)
-    # 2. توليد الفيديو من النص أو الصورة (مثل RunwayML API / HeyGen / Luma API)
-    
-    # محاكاة العملية وإرجاع رابط تنزيل مباشر
-    video_url = f"https://your-server.com/outputs/generated_video_{uuid.uuid4().hex[:6]}.mp4"
+        if st.button("دخول كمدير"):
+            if phone_input == ADMIN_PHONE and password_input == ADMIN_PASSWORD:
+                st.session_state.admin_logged_in = True
+                st.success("أهلاً بك يا مدير! تم تسجيل الدخول بنجاح.")
+                st.rerun()
+            else:
+                st.error("بيانات دخول المدير غير صحيحة.")
+    else:
+        st.success("✅ أنت مسجل الدخول بصلاحيات المدير.")
+        if st.button("تسجيل الخروج"):
+            st.session_state.admin_logged_in = False
+            st.rerun()
 
-    if not is_admin:
-        auth_info["user_data"]["videos_today"] += 1
+        st.markdown("---")
+        st.subheader("➕ توليد رمز جديد لمستخدم")
+        
+        custom_code_input = st.text_input("رمز مخصص (اختراقي - اتركه فارغاً للتوليد التلقائي):")
+        valid_days_input = st.number_input("مدة الصلاحية بالأيام:", min_value=1, value=30)
 
-    return {
-        "status": "success",
-        "message": "تم إنتاج الفيديو بنجاح!",
-        "video_url": video_url,
-        "remaining_daily_videos": (3 - auth_info["user_data"]["videos_today"]) if not is_admin else "غير محدود"
-        }
+        if st.button("إنشاء الرمز"):
+            code = custom_code_input.strip() or str(uuid.uuid4())[:8]
+            st.session_state.users_db[code] = {
+                "valid_days": valid_days_input,
+                "created_at": datetime.date.today(),
+                "is_active": True,
+                "videos_today": 0,
+                "last_used_date": datetime.date.today()
+            }
+            st.success(f"تم إنشاء الرمز بنجاح: **`{code}`** (صالحة لمدة {valid_days_input} يوماً)")
 
-if __name__ == "__main__":
-     import uvicorn
-     uvicorn.run("PythonApplication1:app", host="127.0.0.1", port=8000, reload=True)
+        st.markdown("---")
+        st.subheader("👥 إدارة المستخدمين الحاليين والرموز")
+        
+        if not st.session_state.users_db:
+            st.info("لا توجد رموز مستخدمين مسجلة حتى الآن.")
+        else:
+            for code, data in list(st.session_state.users_db.items()):
+                with st.expander(f"الرمز: {code} | الحالة: {'نشط ✅' if data['is_active'] else 'متوقف ❌'}"):
+                    st.write(f"- أيام الصلاحية الكلية: {data['valid_days']}")
+                    st.write(f"- تاريخ الإنشاء: {data['created_at']}")
+                    st.write(f"- الفيديوهات المستخدمة اليوم: {data['videos_today']}")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button(f"إيقاف الحساب", key=f"stop_{code}"):
+                            data["is_active"] = False
+                            st.rerun()
+                    with col2:
+                        if st.button(f"تفعيل الحساب", key=f"activate_{code}"):
+                            data["is_active"] = True
+                            st.rerun()
+                    with col3:
+                        extra_days = st.number_input(f"تمديد أيام لـ {code}", min_value=1, value=7, key=f"days_{code}")
+                        if st.button(f"تأكيد التمديد", key=f"extend_{code}"):
+                            data["valid_days"] += extra_days
+                            data["is_active"] = True
+                            st.success(تم تمديد الحساب بنجاح!)
+                            st.rerun()
