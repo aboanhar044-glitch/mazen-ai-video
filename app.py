@@ -164,5 +164,5 @@ elif app_mode == "🔐 لوحة تحكم المدير":
                         if st.button(f"تأكيد التمديد", key=f"extend_{code}"):
                             data["valid_days"] += extra_days
                             data["is_active"] = True
-                            st.success(تم تمديد الحساب بنجاح!)
+                            st.success("تم تمديد الحساب بنجاح!")
                             st.rerun()
