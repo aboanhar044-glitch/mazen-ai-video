@@ -9,12 +9,20 @@ st.set_page_config(
     layout="centered"
 )
 
-# ==================== قاعدة البيانات وإدارة الجلسات (في الذاكرة) ====================
+# ==================== تهيئة قاعدة البيانات في الذاكرة (تثبيت الجلسة) ====================
 ADMIN_PHONE = "779942299"
 ADMIN_PASSWORD = "mmaa112000"
 
 if "users_db" not in st.session_state:
-    st.session_state.users_db = {}
+    st.session_state.users_db = {
+        "ADMIN_MASTER_KEY": {
+            "valid_days": 999,
+            "created_at": datetime.date.today(),
+            "is_active": True,
+            "videos_today": 0,
+            "last_used_date": datetime.date.today()
+        }
+    }
 
 if "admin_logged_in" not in st.session_state:
     st.session_state.admin_logged_in = False
@@ -31,32 +39,33 @@ if app_mode == "🎬 توليد الفيديو (المستخدم)":
     user_code = st.text_input("أدخل رمز الدخول (User Code):", type="password")
     
     if user_code:
-        # التحقق من صلاحية المستخدم
-        is_admin_master = (user_code == "ADMIN_MASTER_KEY")
+        # التحقق من صلاحية المستخدم أو المدير العام
+        is_admin_master = (user_code == "ADMIN_MASTER_KEY" or user_code == ADMIN_PASSWORD)
         
         if not is_admin_master and user_code not in st.session_state.users_db:
             st.error("❌ الرمز السري غير صحيح أو غير موجود.")
         else:
             if is_admin_master:
-                st.success("🔓 تم الدخول بصلاحيات المدير المطلقة.")
+                st.success("🔓 تم الدخول بصلاحيات المدير المطلقة عبر الرمز.")
                 is_admin = True
+                user_data = None
             else:
-                user = st.session_state.users_db[user_code]
+                user_data = st.session_state.users_db[user_code]
                 
-                if not user["is_active"]:
+                if not user_data["is_active"]:
                     st.error("❌ تم إيقاف هذا الحساب من قبل المدير.")
                     st.stop()
                 
                 # التحقق من تاريخ انتهاء الصلاحية
-                expiration_date = user["created_at"] + datetime.timedelta(days=user["valid_days"])
+                expiration_date = user_data["created_at"] + datetime.timedelta(days=user_data["valid_days"])
                 if datetime.date.today() > expiration_date:
                     st.error("⏳ انتهت فترة الاشتراك الخاصة بك.")
                     st.stop()
 
                 # تحديث العداد اليومي
-                if user["last_used_date"] != datetime.date.today():
-                    user["last_used_date"] = datetime.date.today()
-                    user["videos_today"] = 0
+                if user_data["last_used_date"] != datetime.date.today():
+                    user_data["last_used_date"] = datetime.date.today()
+                    user_data["videos_today"] = 0
 
                 is_admin = False
 
@@ -68,8 +77,7 @@ if app_mode == "🎬 توليد الفيديو (المستخدم)":
             image_file = st.file_uploader("رفع صورة مرجعية اختيارية (Image File):", type=["png", "jpg", "jpeg"])
             duration_seconds = st.slider("مدة الفيديو بالثواني:", min_value=5, max_value=30, value=10)
 
-            if not is_admin:
-                user_data = st.session_state.users_db[user_code]
+            if not is_admin and user_data:
                 remaining_videos = 3 - user_data["videos_today"]
                 st.info(f"📊 رصيدك المتبقي لليوم: **{max(0, remaining_videos)} فيديوهات**")
 
@@ -78,7 +86,7 @@ if app_mode == "🎬 توليد الفيديو (المستخدم)":
                     st.warning("الرجاء إدخال وصف الفيديو أولاً.")
                 else:
                     # قيود المستخدم العادي
-                    if not is_admin:
+                    if not is_admin and user_data:
                         if user_data["videos_today"] >= 3:
                             st.error("⚠️ لقد استهلكت الحد الأقصى اليومي (3 فيديوهات). حاول غداً.")
                             st.stop()
@@ -86,17 +94,17 @@ if app_mode == "🎬 توليد الفيديو (المستخدم)":
                             duration_seconds = 10
 
                     with st.spinner("جاري معالجة وتوليد الفيديو بالذكاء الاصطناعي... يرجى الانتظار ⏳"):
-                        # محاكاة عملية التوليد
                         import time
                         time.sleep(3)
                         
-                        video_url = f"https://your-server.com/outputs/generated_video_{uuid.uuid4().hex[:6]}.mp4"
+                        # توليد رابط فيديو وهمي جاهز للعرض والتحميل
+                        video_url = f"https://www.w3schools.com/html/mov_bbb.mp4"
                         
-                        if not is_admin:
+                        if not is_admin and user_data:
                             user_data["videos_today"] += 1
 
                         st.success("🎉 تم إنتاج الفيديو بنجاح!")
-                        st.markdown(f"🔗 **رابط التحميل المباشر:** [اضغط هنا للتحميل]({video_url})")
+                        st.markdown(f"🔗 **رابط التحميل المباشر:** [اضغط هنا لتحميل الفيديو]({video_url})")
                         st.video(video_url)
 
 # ==================== 2. لوحة تحكم المدير ====================
@@ -124,7 +132,7 @@ elif app_mode == "🔐 لوحة تحكم المدير":
         st.markdown("---")
         st.subheader("➕ توليد رمز جديد لمستخدم")
         
-        custom_code_input = st.text_input("رمز مخصص (اختراقي - اتركه فارغاً للتوليد التلقائي):")
+        custom_code_input = st.text_input("رمز مخصص (اختياري - اتركه فارغاً للتوليد التلقائي):")
         valid_days_input = st.number_input("مدة الصلاحية بالأيام:", min_value=1, value=30)
 
         if st.button("إنشاء الرمز"):
@@ -141,10 +149,12 @@ elif app_mode == "🔐 لوحة تحكم المدير":
         st.markdown("---")
         st.subheader("👥 إدارة المستخدمين الحاليين والرموز")
         
-        if not st.session_state.users_db:
+        if len(st.session_state.users_db) <= 1:
             st.info("لا توجد رموز مستخدمين مسجلة حتى الآن.")
         else:
             for code, data in list(st.session_state.users_db.items()):
+                if code == "ADMIN_MASTER_KEY":
+                    continue
                 with st.expander(f"الرمز: {code} | الحالة: {'نشط ✅' if data['is_active'] else 'متوقف ❌'}"):
                     st.write(f"- أيام الصلاحية الكلية: {data['valid_days']}")
                     st.write(f"- تاريخ الإنشاء: {data['created_at']}")
@@ -152,16 +162,16 @@ elif app_mode == "🔐 لوحة تحكم المدير":
                     
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        if st.button(f"إيقاف الحساب", key=f"stop_{code}"):
+                        if st.button("إيقاف الحساب", key=f"stop_{code}"):
                             data["is_active"] = False
                             st.rerun()
                     with col2:
-                        if st.button(f"تفعيل الحساب", key=f"activate_{code}"):
+                        if st.button("تفعيل الحساب", key=f"activate_{code}"):
                             data["is_active"] = True
                             st.rerun()
                     with col3:
-                        extra_days = st.number_input(f"تمديد أيام لـ {code}", min_value=1, value=7, key=f"days_{code}")
-                        if st.button(f"تأكيد التمديد", key=f"extend_{code}"):
+                        extra_days = st.number_input("تمديد أيام", min_value=1, value=7, key=f"days_{code}")
+                        if st.button("تأكيد التمديد", key=f"extend_{code}"):
                             data["valid_days"] += extra_days
                             data["is_active"] = True
                             st.success("تم تمديد الحساب بنجاح!")
